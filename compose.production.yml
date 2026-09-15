@@ -1,0 +1,45 @@
+services:
+  database:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zenda
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: zenda
+    volumes:
+      - zenda_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zenda"]
+      interval: 5s
+      retries: 10
+  migrate:
+    build:
+      context: ./api
+      target: migrate
+    environment:
+      DATABASE_URL: postgresql://zenda:${POSTGRES_PASSWORD}@database:5432/zenda
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: "no"
+  api:
+    build: ./api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://zenda:${POSTGRES_PASSWORD}@database:5432/zenda
+      APP_ORIGIN: ${APP_ORIGIN:?Set the public HTTPS origin in .env}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  web:
+    build: ./web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+volumes:
+  zenda_data:

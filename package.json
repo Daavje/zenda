@@ -1,0 +1,17 @@
+{
+  "name": "zenda",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Gratis, zelf te hosten gezinsagenda",
+  "license": "MIT",
+  "scripts": {
+    "setup": "npm --prefix api ci && npm --prefix web ci && npm --prefix api run generate",
+    "local": "node scripts/dev.mjs",
+    "dev": "node scripts/dev.mjs --external",
+    "build": "npm --prefix api run build && npm --prefix web run build",
+    "check": "npm --prefix api run check && npm --prefix web run lint && npm --prefix web run check",
+    "test": "npm --prefix api test",
+    "format": "node web/node_modules/prettier/bin/prettier.cjs --write web/src api/src api/tests scripts README.md"
+  },
+  "engines": { "node": ">=24.0.0" }
+}

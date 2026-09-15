@@ -1,4 +1,4 @@
-import { defineConfig, env } from "prisma/config";
+import { defineConfig } from "prisma/config";
 import "dotenv/config";
 
 export default defineConfig({
@@ -9,6 +9,9 @@ export default defineConfig({
   },
 
   datasource: {
-    url: env("DATABASE_URL"),
+    // Generation and validation also run before a database is configured.
+    url:
+      process.env.DATABASE_URL ??
+      "postgresql://unused:unused@127.0.0.1:1/unused",
   },
 });
