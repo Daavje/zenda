@@ -11,6 +11,7 @@ if (!connectionString) {
 
 const adapter = new PrismaPg({
   connectionString,
+  max: Number(process.env.DB_POOL_MAX || 10),
 });
 
 export const prisma = new PrismaClient({

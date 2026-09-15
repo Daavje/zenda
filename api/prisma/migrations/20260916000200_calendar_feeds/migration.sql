@@ -1,0 +1,2 @@
+CREATE TABLE "CalendarFeed" ("id" TEXT PRIMARY KEY, "calendarId" TEXT NOT NULL REFERENCES "Calendar"("id") ON DELETE CASCADE, "name" TEXT NOT NULL, "url" TEXT NOT NULL, "lastSync" TIMESTAMP(3), "lastError" TEXT);
+ALTER TABLE "Event" ADD COLUMN "recurrenceTimezone" TEXT, ADD COLUMN "feedId" TEXT REFERENCES "CalendarFeed"("id") ON DELETE CASCADE;

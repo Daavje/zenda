@@ -27,6 +27,7 @@ model Calendar {
   people Person[]
   events Event[]
   members CalendarMember[]
+  feeds CalendarFeed[]
 }
 
 model CalendarMember {
@@ -72,6 +73,9 @@ model Event {
   reminderMinutes Int?
   excludedDates String[] @default([])
   externalUid String?
+  recurrenceTimezone String?
+  feedId String?
+  feed CalendarFeed? @relation(fields: [feedId], references: [id], onDelete: Cascade)
   attachments Attachment[]
 
   calendar Calendar      @relation(fields: [calendarId], references: [id], onDelete: Cascade)
@@ -86,6 +90,17 @@ model Session {
   userId String
   expiresAt DateTime
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CalendarFeed {
+  id String @id @default(cuid())
+  calendarId String
+  name String
+  url String
+  lastSync DateTime?
+  lastError String?
+  calendar Calendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  events Event[]
 }
 
 model Attachment {
