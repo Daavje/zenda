@@ -1,0 +1,127 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String           @id @default(cuid())
+  name         String
+  email        String           @unique
+  passwordHash String
+  createdAt    DateTime         @default(now())
+
+  memberships CalendarMember[]
+  sessions Session[]
+  subscriptions PushSubscription[]
+}
+
+model Calendar {
+  id        String   @id @default(cuid())
+  name      String
+  timezone  String   @default("Europe/Amsterdam")
+  createdAt DateTime @default(now())
+
+  people Person[]
+  events Event[]
+  members CalendarMember[]
+}
+
+model CalendarMember {
+  userId     String
+  calendarId String
+  role       CalendarRole @default(VIEW)
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  calendar Calendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+
+  @@id([userId, calendarId])
+}
+
+enum CalendarRole {
+  VIEW
+  EDIT
+  ADMIN
+}
+
+model Person {
+  id         String        @id @default(cuid())
+  name       String
+  initials   String
+  color      String
+  calendarId String
+  createdAt  DateTime      @default(now())
+
+  calendar   Calendar      @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  eventLinks EventPerson[]
+}
+
+model Event {
+  id             String        @id @default(cuid())
+  title          String
+  start          DateTime
+  end            DateTime
+  location       String?
+  notes          String?
+  recurrenceRule String?
+  calendarId     String
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  reminderMinutes Int?
+  excludedDates String[] @default([])
+  externalUid String?
+  attachments Attachment[]
+
+  calendar Calendar      @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  people   EventPerson[]
+
+  @@unique([calendarId, externalUid])
+  @@index([calendarId, start])
+}
+
+model Session {
+  id String @id
+  userId String
+  expiresAt DateTime
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Attachment {
+  id String @id @default(cuid())
+  eventId String
+  name String
+  data Bytes
+  size Int
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+}
+
+model PushSubscription {
+  id String @id @default(cuid())
+  userId String
+  endpoint String @unique
+  p256dh String
+  auth String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries NotificationDelivery[]
+}
+
+model NotificationDelivery {
+  id String @id @default(cuid())
+  subscriptionId String
+  occurrenceKey String
+  createdAt DateTime @default(now())
+  subscription PushSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  @@unique([subscriptionId, occurrenceKey])
+}
+
+model EventPerson {
+  eventId  String
+  personId String
+
+  event  Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@id([eventId, personId])
+}
