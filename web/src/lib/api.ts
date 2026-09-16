@@ -9,6 +9,22 @@ export type Calendar = {
   name: string;
   timezone: string;
   role: "VIEW" | "EDIT" | "ADMIN";
+  ownerId: string | null;
+};
+export type Member = {
+  userId: string;
+  role: string;
+  user: { name: string; email: string; managedById: string | null };
+};
+export type Feed = {
+  id: string;
+  name: string;
+  color: string;
+  ownerId: string | null;
+  owner: { name: string } | null;
+  shares: { userId: string }[];
+  lastSync: string | null;
+  lastError: string | null;
 };
 export type CalendarEvent = {
   id: string;

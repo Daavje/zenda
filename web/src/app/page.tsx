@@ -4,12 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Auth, { User } from "@/components/Auth";
 import Dialog from "@/components/Dialog";
 import EventEditor from "@/components/EventEditor";
-import PeopleManager from "@/components/PeopleManager";
-import Feeds from "@/components/Feeds";
-import Sharing from "@/components/Sharing";
+
+import Settings, { Preferences, readPreferences } from "@/components/Settings";
 import {
   Calendar,
   CalendarEvent,
+  Feed,
   Person,
   getCalendars,
   getPeople,
@@ -42,11 +42,21 @@ export default function Home() {
   );
 }
 function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const [preferences, setPreferences] = useState<Preferences>(() =>
+    readPreferences(user.id),
+  );
+  function changePreferences(value: Preferences) {
+    setPreferences(value);
+    try {
+      localStorage.setItem(
+        `zenda:preferences:${user.id}`,
+        JSON.stringify(value),
+      );
+    } catch {}
+  }
   const [calendars, setCalendars] = useState<Calendar[]>([]),
     [calendarId, setCalendarId] = useState("");
-  const [error, setError] = useState(""),
-    [creating, setCreating] = useState(false),
-    [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const load = useCallback(
     () =>
       getCalendars()
@@ -65,25 +75,6 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   useEffect(() => {
     void load();
   }, [load]);
-  async function create(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      const calendar = await request<Calendar>(
-        "/calendars",
-        "POST",
-        Object.fromEntries(new FormData(event.currentTarget)),
-      );
-      await load();
-      setCalendarId(calendar.id);
-      setCreating(false);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
   async function logout() {
     try {
       if ("serviceWorker" in navigator) {
@@ -102,7 +93,16 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
   const calendar = calendars.find((c) => c.id === calendarId);
   return (
-    <div className="workspace">
+    <div
+      className="workspace"
+      data-theme={preferences.theme}
+      data-density={preferences.density}
+      style={
+        preferences.theme === "custom"
+          ? ({ "--green": preferences.accent } as React.CSSProperties)
+          : undefined
+      }
+    >
       <header className="appHeader">
         <Link className="brand" href="/">
           zenda<span>✳</span>
@@ -127,44 +127,18 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
           calendars={calendars}
           user={user}
           onCalendar={setCalendarId}
-          onCreate={() => setCreating(true)}
+          preferences={preferences}
+          onPreferences={changePreferences}
+          onCalendarChanged={load}
         />
       ) : (
         <div className="loading">
           <p>
             {error
               ? "Je agenda kon niet worden geladen."
-              : "Je agenda wordt geopend…"}
+              : "Je hebt nog geen toegang tot een familieagenda. Vraag je beheerder om toegang."}
           </p>
         </div>
-      )}
-      {creating && (
-        <Dialog
-          title="Nieuwe agenda"
-          onClose={() => {
-            if (!busy) setCreating(false);
-          }}
-        >
-          <form onSubmit={create}>
-            <label>
-              Naam
-              <input
-                autoFocus
-                name="name"
-                maxLength={100}
-                required
-                placeholder="Bijvoorbeeld: ons gezin"
-              />
-            </label>
-            <label>
-              Tijdzone
-              <input name="timezone" required defaultValue="Europe/Amsterdam" />
-            </label>
-            <button className="primary" disabled={busy}>
-              Agenda maken
-            </button>
-          </form>
-        </Dialog>
       )}
     </div>
   );
@@ -174,13 +148,17 @@ function Agenda({
   calendars,
   user,
   onCalendar,
-  onCreate,
+  preferences,
+  onPreferences,
+  onCalendarChanged,
 }: {
   calendar: Calendar;
   calendars: Calendar[];
   user: User;
   onCalendar: (id: string) => void;
-  onCreate: () => void;
+  preferences: Preferences;
+  onPreferences: (value: Preferences) => void;
+  onCalendarChanged: () => Promise<void>;
 }) {
   const [current, setCurrent] = useState(
       () =>
@@ -190,7 +168,9 @@ function Agenda({
         ),
     ),
     [view, setView] = useState<"day" | "week" | "month">(() =>
-      window.matchMedia("(max-width: 760px)").matches ? "day" : "month",
+      window.matchMedia("(max-width: 760px)").matches
+        ? "day"
+        : preferences.defaultView,
     );
   const [people, setPeople] = useState<Person[]>([]),
     [events, setEvents] = useState<CalendarEvent[]>([]);
@@ -198,9 +178,32 @@ function Agenda({
     [notice, setNotice] = useState(""),
     [loading, setLoading] = useState(true),
     [busy, setBusy] = useState(false);
-  const [showFeeds, setShowFeeds] = useState(false);
-  const [selected, setSelected] = useState<CalendarEvent | null>(null),
-    [sharing, setSharing] = useState(false);
+  const [tab, setTab] = useState<"agenda" | "personal" | "calendar">("agenda");
+  const [feeds, setFeeds] = useState<Feed[]>([]);
+  const [hiddenFeeds, setHiddenFeeds] = useState<string[]>(() => {
+    try {
+      return JSON.parse(
+        localStorage.getItem(`zenda:hidden:${user.id}:${calendar.id}`) || "[]",
+      );
+    } catch {
+      return [];
+    }
+  });
+  function toggleFeed(id: string) {
+    setHiddenFeeds((current) => {
+      const next = current.includes(id)
+        ? current.filter((value) => value !== id)
+        : [...current, id];
+      try {
+        localStorage.setItem(
+          `zenda:hidden:${user.id}:${calendar.id}`,
+          JSON.stringify(next),
+        );
+      } catch {}
+      return next;
+    });
+  }
+  const [selected, setSelected] = useState<CalendarEvent | null>(null);
   const [editor, setEditor] = useState<{
     event: CalendarEvent | null;
     day: string;
@@ -227,13 +230,20 @@ function Agenda({
   const load = useCallback(async () => {
     const generation = ++sequence.current;
     try {
-      const [nextPeople, nextEvents] = await Promise.all([
+      const [nextPeople, nextEvents, nextFeeds] = await Promise.all([
         getPeople(calendar.id),
         getEvents(calendar.id, rangeStart, rangeEnd),
+        request<Feed[]>(`/calendars/${calendar.id}/feeds`),
       ]);
       if (generation !== sequence.current) return;
       setPeople(nextPeople);
       setEvents(nextEvents);
+      setFeeds(nextFeeds);
+      setSelected((current) =>
+        current && nextEvents.some((event) => event.id === current.id)
+          ? current
+          : null,
+      );
       setError("");
     } catch (err) {
       if (generation === sequence.current) setError((err as Error).message);
@@ -405,6 +415,7 @@ function Agenda({
   }
   const filtered = events.filter(
     (event) =>
+      !hiddenFeeds.includes(event.feedId || "family") &&
       (!personFilter ||
         event.people.some((p) => p.person.id === personFilter)) &&
       [event.title, event.location, event.notes].some((value) =>
@@ -445,260 +456,325 @@ function Agenda({
     <div className="appBody">
       <aside className="sidebar">
         <div className="calendarPicker">
-          <span className="eyebrow">JOUW AGENDA</span>
-          <label className="srOnly" htmlFor="calendar">
-            Agenda kiezen
-          </label>
-          <select
-            id="calendar"
-            value={calendar.id}
-            onChange={(e) => onCalendar(e.target.value)}
-          >
-            {calendars.map((value) => (
-              <option key={value.id} value={value.id}>
-                {value.name}
-              </option>
-            ))}
-          </select>
-          <button className="textButton" onClick={onCreate}>
-            + Nieuwe agenda
-          </button>
-        </div>
-        <PeopleManager
-          calendarId={calendar.id}
-          people={people}
-          canEdit={canEdit}
-          onPeopleChanged={load}
-        />
-        <div className="sidebarTools">
-          <h3>Regel het samen</h3>
-          {calendar.role === "ADMIN" && (
-            <button onClick={() => setSharing(true)}>♧ Agenda delen</button>
-          )}
-          <button onClick={() => setShowFeeds(true)}>↗ Externe agenda’s</button>
-          <button onClick={notifications} disabled={busy}>
-            ◷ Meldingen instellen
-          </button>
-          {canEdit && (
-            <button
-              onClick={() => importInput.current?.click()}
-              disabled={busy}
+          <span className="eyebrow">FAMILIEAGENDA</span>
+          {calendars.length > 1 ? (
+            <select
+              aria-label="Agenda kiezen"
+              value={calendar.id}
+              onChange={(e) => onCalendar(e.target.value)}
             >
-              ↓ Agenda importeren (.ics)
-            </button>
+              {calendars.map((value) => (
+                <option key={value.id} value={value.id}>
+                  {value.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <h2>{calendar.name}</h2>
           )}
-          <a href={`/api/calendars/${calendar.id}/export`}>
-            ↑ Agenda exporteren (.ics)
-          </a>
-          <input
-            ref={importInput}
-            className="srOnly"
-            type="file"
-            accept=".ics,text/calendar"
-            onChange={(e) => {
-              void importFile(e.target.files?.[0]);
-            }}
-          />
         </div>
-        <div className="sidebarNote">
-          <span>✳</span>
-          <p>
-            Een beetje overzicht.
-            <br />
-            Meer ruimte voor elkaar.
-          </p>
-        </div>
+        <nav className="mainTabs" aria-label="Hoofdnavigatie">
+          <button
+            aria-current={tab === "agenda" ? "page" : undefined}
+            onClick={() => setTab("agenda")}
+          >
+            ▦ Agenda
+          </button>
+          <button
+            aria-current={tab === "personal" ? "page" : undefined}
+            onClick={() => setTab("personal")}
+          >
+            ⚙ Instellingen
+          </button>
+          <button
+            aria-current={tab === "calendar" ? "page" : undefined}
+            onClick={() => setTab("calendar")}
+          >
+            ♧ Agenda-instellingen
+          </button>
+        </nav>
+        <section className="calendarLayers">
+          <h3>Weergeven</h3>
+          <label className="checkLabel">
+            <input
+              type="checkbox"
+              checked={!hiddenFeeds.includes("family")}
+              onChange={() => toggleFeed("family")}
+            />
+            <span className="layerDot" style={{ background: "var(--green)" }} />
+            {calendar.name}
+          </label>
+          {feeds.map((feed) => (
+            <label className="checkLabel" key={feed.id}>
+              <input
+                type="checkbox"
+                checked={!hiddenFeeds.includes(feed.id)}
+                onChange={() => toggleFeed(feed.id)}
+              />
+              <span className="layerDot" style={{ background: feed.color }} />
+              <span>
+                {feed.name}
+                <small>
+                  {feed.ownerId === user.id
+                    ? "Mijn externe agenda"
+                    : "Van " + (feed.owner?.name || "een gezinslid")}
+                </small>
+              </span>
+            </label>
+          ))}
+          <button className="textButton" onClick={() => setTab("personal")}>
+            + Externe agenda toevoegen
+          </button>
+        </section>
+        <section className="familyLegend">
+          <h3>Het gezin</h3>
+          {people.map((person) => (
+            <button
+              key={person.id}
+              className="legendPerson"
+              aria-pressed={personFilter === person.id}
+              onClick={() => {
+                setPersonFilter((current) =>
+                  current === person.id ? "" : person.id,
+                );
+                setTab("agenda");
+              }}
+            >
+              <span className="bubble" style={{ background: person.color }}>
+                {person.initials}
+              </span>
+              {person.name}
+            </button>
+          ))}
+        </section>
         <small className="timezone">
           {calendar.timezone}
           <br />
           {calendar.role === "VIEW"
-            ? "Alleen lezen"
-            : "Wijzigingen worden automatisch gedeeld"}
+            ? "Familieagenda: alleen lezen"
+            : "Wijzigingen automatisch gedeeld"}
         </small>
       </aside>
-      <main className="calendarMain">
-        <div className="pageHeading">
-          <div>
-            <span className="eyebrow">ALLE PLANNEN OP ÉÉN PLEK</span>
-            <h1>{heading}</h1>
-            <p className="muted">
-              Dit staat er op de planning voor {calendar.name.toLowerCase()}.
-            </p>
-          </div>
-          {canEdit && (
-            <button className="primary" onClick={() => newEvent()}>
-              + Nieuwe afspraak
-            </button>
-          )}
-        </div>
-        {error && (
-          <div role="alert" className="error">
-            {error}{" "}
+      <input
+        ref={importInput}
+        className="srOnly"
+        type="file"
+        accept=".ics,text/calendar"
+        onChange={(e) => {
+          void importFile(e.target.files?.[0]);
+          e.target.value = "";
+        }}
+      />
+      {tab !== "agenda" && (error || notice) && (
+        <div className="settingsFeedback" role="status">
+          <p className={error ? "error" : "notice"}>
+            {error || notice}
             <button
               onClick={() => {
-                void load();
+                setError("");
+                setNotice("");
               }}
             >
-              Opnieuw laden
+              Sluiten
             </button>
-            <button aria-label="Melding sluiten" onClick={() => setError("")}>
-              ×
-            </button>
-          </div>
-        )}
-        {notice && (
-          <div role="status" className="notice">
-            {notice}
-            <button aria-label="Melding sluiten" onClick={() => setNotice("")}>
-              ×
-            </button>
-          </div>
-        )}
-        <div className="toolbar">
-          <div className="navigation">
-            <button aria-label="Vorige periode" onClick={() => navigate(-1)}>
-              ‹
-            </button>
-            <button onClick={() => setCurrent(new Date(today + "T12:00:00"))}>
-              Vandaag
-            </button>
-            <button aria-label="Volgende periode" onClick={() => navigate(1)}>
-              ›
-            </button>
-          </div>
-          <div className="filters">
-            <input
-              aria-label="Zoeken in deze periode"
-              placeholder="Zoek een afspraak…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            <select
-              aria-label="Filter op persoon"
-              value={personFilter}
-              onChange={(e) => setPersonFilter(e.target.value)}
-            >
-              <option value="">Iedereen</option>
-              {people.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="viewSwitch">
-            {(["day", "week", "month"] as const).map((value) => (
-              <button
-                key={value}
-                aria-pressed={view === value}
-                className={view === value ? "active" : ""}
-                onClick={() => setView(value)}
-              >
-                {{ day: "Dag", week: "Week", month: "Maand" }[value]}
-              </button>
-            ))}
-          </div>
+          </p>
         </div>
-        <div className="calendarStatus" aria-live="polite">
-          {loading
-            ? "Agenda laden…"
-            : `${filtered.length} ${filtered.length === 1 ? "afspraak" : "afspraken"} in deze periode`}
-        </div>
-        <section className={`calendarGrid ${view}`} aria-label="Afspraken">
-          <div className="weekdays">
-            {(view === "day"
-              ? [current.toLocaleDateString("nl-NL", { weekday: "long" })]
-              : [
-                  "Maandag",
-                  "Dinsdag",
-                  "Woensdag",
-                  "Donderdag",
-                  "Vrijdag",
-                  "Zaterdag",
-                  "Zondag",
-                ]
-            ).map((name) => (
-              <div key={name}>{name}</div>
-            ))}
-          </div>
-          <div className="days">
-            {days.map((day) => {
-              const key = dateKey(day),
-                dayEvents = filtered.filter((event) => onDay(event, key));
-              return (
-                <article
-                  className={`dayCell ${day.getMonth() !== current.getMonth() ? "outside" : ""} ${key === today ? "today" : ""}`}
-                  key={key}
-                >
-                  <header>
-                    <span className="dayNumber">{day.getDate()}</span>
-                    {view !== "month" && (
-                      <small>
-                        {day.toLocaleDateString("nl-NL", { month: "short" })}
-                      </small>
-                    )}
-                    {canEdit && (
-                      <button
-                        className="addDay"
-                        aria-label={`Afspraak toevoegen op ${key}`}
-                        onClick={() => newEvent(key)}
-                      >
-                        +
-                      </button>
-                    )}
-                  </header>
-                  {dayEvents.map((event) => (
-                    <button
-                      className="eventCard"
-                      key={event.id + event.start}
-                      style={{
-                        borderLeftColor:
-                          event.people[0]?.person.color || "#788b70",
-                      }}
-                      onClick={() => setSelected(event)}
-                    >
-                      <span className="eventTime">
-                        {localInput(event.start, calendar.timezone).slice(11)} –{" "}
-                        {localInput(event.end, calendar.timezone).slice(11)}
-                        {event.recurrenceRule && " ↻"}
-                      </span>
-                      <strong>{event.title}</strong>
-                      {event.location && view !== "month" && (
-                        <span className="muted">{event.location}</span>
-                      )}
-                      {bubbles(event)}
-                    </button>
-                  ))}
-                  {!dayEvents.length && view === "day" && (
-                    <p className="emptyDay">
-                      Nog niets gepland. Ruimte voor iets moois.
-                    </p>
-                  )}
-                </article>
-              );
-            })}
-          </div>
-        </section>
-        <footer className="calendarFooter">
-          <span>
-            <i /> Vandaag
-          </span>
-          <span>Alles bij elkaar, iedereen in beeld.</span>
-        </footer>
-      </main>
-      {showFeeds && (
-        <Feeds
-          calendar={calendar}
-          onClose={() => setShowFeeds(false)}
-          onChanged={load}
-        />
       )}
-      {sharing && (
-        <Sharing
+      {tab !== "agenda" ? (
+        <Settings
+          tab={tab}
           calendar={calendar}
-          userId={user.id}
-          onClose={() => setSharing(false)}
+          user={user}
+          people={people}
+          preferences={preferences}
+          onPreferences={onPreferences}
+          onChanged={load}
+          onCalendarChanged={onCalendarChanged}
+          onNotifications={notifications}
+          onImport={() => importInput.current?.click()}
+          busy={busy}
         />
+      ) : (
+        <main className="calendarMain">
+          <div className="pageHeading">
+            <div>
+              <h1>{heading}</h1>
+            </div>
+            {canEdit && (
+              <button className="primary" onClick={() => newEvent()}>
+                + Nieuwe afspraak
+              </button>
+            )}
+          </div>
+          {error && (
+            <div role="alert" className="error">
+              {error}{" "}
+              <button
+                onClick={() => {
+                  void load();
+                }}
+              >
+                Opnieuw laden
+              </button>
+              <button aria-label="Melding sluiten" onClick={() => setError("")}>
+                ×
+              </button>
+            </div>
+          )}
+          {notice && (
+            <div role="status" className="notice">
+              {notice}
+              <button
+                aria-label="Melding sluiten"
+                onClick={() => setNotice("")}
+              >
+                ×
+              </button>
+            </div>
+          )}
+          <div className="toolbar">
+            <div className="navigation">
+              <button aria-label="Vorige periode" onClick={() => navigate(-1)}>
+                ‹
+              </button>
+              <button onClick={() => setCurrent(new Date(today + "T12:00:00"))}>
+                Vandaag
+              </button>
+              <button aria-label="Volgende periode" onClick={() => navigate(1)}>
+                ›
+              </button>
+            </div>
+            <div className="filters">
+              <input
+                aria-label="Zoeken in deze periode"
+                placeholder="Zoek een afspraak…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <select
+                aria-label="Filter op persoon"
+                value={personFilter}
+                onChange={(e) => setPersonFilter(e.target.value)}
+              >
+                <option value="">Iedereen</option>
+                {people.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="viewSwitch">
+              {(["day", "week", "month"] as const).map((value) => (
+                <button
+                  key={value}
+                  aria-pressed={view === value}
+                  className={view === value ? "active" : ""}
+                  onClick={() => setView(value)}
+                >
+                  {{ day: "Dag", week: "Week", month: "Maand" }[value]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="calendarStatus" aria-live="polite">
+            {loading
+              ? "Agenda laden…"
+              : `${filtered.length} ${filtered.length === 1 ? "afspraak" : "afspraken"} in deze periode`}
+          </div>
+          <section className={`calendarGrid ${view}`} aria-label="Afspraken">
+            <div className="weekdays">
+              {(view === "day"
+                ? [current.toLocaleDateString("nl-NL", { weekday: "long" })]
+                : [
+                    "Maandag",
+                    "Dinsdag",
+                    "Woensdag",
+                    "Donderdag",
+                    "Vrijdag",
+                    "Zaterdag",
+                    "Zondag",
+                  ]
+              ).map((name) => (
+                <div key={name}>{name}</div>
+              ))}
+            </div>
+            <div className="days">
+              {days.map((day) => {
+                const key = dateKey(day),
+                  dayEvents = filtered.filter((event) => onDay(event, key));
+                return (
+                  <article
+                    className={`dayCell ${day.getMonth() !== current.getMonth() ? "outside" : ""} ${key === today ? "today" : ""}`}
+                    key={key}
+                  >
+                    <header>
+                      <span className="dayNumber">{day.getDate()}</span>
+                      {view !== "month" && (
+                        <small>
+                          {day.toLocaleDateString("nl-NL", { month: "short" })}
+                        </small>
+                      )}
+                      {canEdit && (
+                        <button
+                          className="addDay"
+                          aria-label={`Afspraak toevoegen op ${key}`}
+                          onClick={() => newEvent(key)}
+                        >
+                          +
+                        </button>
+                      )}
+                    </header>
+                    {dayEvents.map((event) => (
+                      <button
+                        className="eventCard"
+                        key={event.id + event.start}
+                        style={{
+                          borderLeftColor:
+                            feeds.find((feed) => feed.id === event.feedId)
+                              ?.color ||
+                            event.people[0]?.person.color ||
+                            "var(--green)",
+                        }}
+                        onClick={() => setSelected(event)}
+                      >
+                        <span className="eventTime">
+                          {localInput(event.start, calendar.timezone).slice(11)}{" "}
+                          – {localInput(event.end, calendar.timezone).slice(11)}
+                          {event.recurrenceRule && " ↻"}
+                        </span>
+                        <strong>{event.title}</strong>
+                        {event.feedId && (
+                          <small className="eventSource">
+                            {
+                              feeds.find((feed) => feed.id === event.feedId)
+                                ?.name
+                            }
+                          </small>
+                        )}
+                        {event.location && view !== "month" && (
+                          <span className="muted">{event.location}</span>
+                        )}
+                        {bubbles(event)}
+                      </button>
+                    ))}
+                    {!dayEvents.length && view === "day" && (
+                      <p className="emptyDay">
+                        Nog niets gepland. Ruimte voor iets moois.
+                      </p>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+          <footer className="calendarFooter">
+            <span>
+              <i /> Vandaag
+            </span>
+            <span>Alles bij elkaar, iedereen in beeld.</span>
+          </footer>
+        </main>
       )}
       {editor && (
         <EventEditor

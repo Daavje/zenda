@@ -12,6 +12,12 @@ model User {
   email        String           @unique
   passwordHash String
   createdAt    DateTime         @default(now())
+  managedById String?
+  managedBy User? @relation("ManagedUsers", fields: [managedById], references: [id], onDelete: Restrict)
+  managedUsers User[] @relation("ManagedUsers")
+  ownedCalendars Calendar[] @relation("CalendarOwner")
+  ownedFeeds CalendarFeed[]
+  feedShares FeedShare[]
 
   memberships CalendarMember[]
   sessions Session[]
@@ -23,6 +29,8 @@ model Calendar {
   name      String
   timezone  String   @default("Europe/Amsterdam")
   createdAt DateTime @default(now())
+  ownerId String?
+  owner User? @relation("CalendarOwner", fields: [ownerId], references: [id], onDelete: Restrict)
 
   people Person[]
   events Event[]
@@ -99,8 +107,20 @@ model CalendarFeed {
   url String
   lastSync DateTime?
   lastError String?
+  ownerId String?
+  color String @default("#627faa")
+  owner User? @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  shares FeedShare[]
   calendar Calendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
   events Event[]
+}
+
+model FeedShare {
+  feedId String
+  userId String
+  feed CalendarFeed @relation(fields: [feedId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([feedId, userId])
 }
 
 model Attachment {

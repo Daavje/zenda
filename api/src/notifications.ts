@@ -53,6 +53,7 @@ export async function sendReminders(now = new Date()) {
     const events = await prisma.event.findMany({
       where: { reminderMinutes: { not: null } },
       include: {
+        feed: { include: { shares: true } },
         calendar: {
           include: {
             members: {
@@ -76,7 +77,12 @@ export async function sendReminders(now = new Date()) {
       for (const occurrence of occurrences) {
         const due = +occurrence.start - ahead;
         if (due > +now || due < +now - 60000) continue;
-        for (const member of event.calendar.members)
+        for (const member of event.calendar.members.filter(
+          (member) =>
+            !event.feed ||
+            event.feed.ownerId === member.userId ||
+            event.feed.shares.some((share) => share.userId === member.userId),
+        ))
           for (const subscription of member.user.subscriptions) {
             const occurrenceKey = `${event.id}:${occurrence.start.toISOString()}:${event.reminderMinutes}`;
             const claimed = await prisma.notificationDelivery.createMany({

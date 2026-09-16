@@ -13,6 +13,7 @@ async function database(port) {
   const socket = new PGLiteSocketServer({ db, port, host: "127.0.0.1" });
   await socket.start();
   return {
+    db,
     close: async () => {
       await socket.stop();
       await db.close();
@@ -68,6 +69,10 @@ try {
   if (code) {
     console.error(logs);
     process.exitCode = 1;
+  }
+  if (!code) {
+    const { testFamily } = await import("./family.mjs");
+    await testFamily(storage.db, "http://127.0.0.1:3011/api");
   }
 } finally {
   await stopApi();

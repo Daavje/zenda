@@ -2,7 +2,12 @@
 import Link from "next/link";
 import { useState } from "react";
 import { request } from "@/lib/api";
-export type User = { id: string; name: string; email: string };
+export type User = {
+  id: string;
+  name: string;
+  email: string;
+  managedById: string | null;
+};
 export default function Auth({ onLogin }: { onLogin: (user: User) => void }) {
   const [register, setRegister] = useState(false),
     [error, setError] = useState(""),
@@ -56,10 +61,12 @@ export default function Auth({ onLogin }: { onLogin: (user: User) => void }) {
       <section className="authPanel">
         <form onSubmit={submit}>
           <span className="eyebrow">WELKOM BIJ ZENDA</span>
-          <h2>{register ? "Maak je eigen plek" : "Fijn dat je er bent"}</h2>
+          <h2>
+            {register ? "Start een familieagenda" : "Fijn dat je er bent"}
+          </h2>
           <p className="muted">
             {register
-              ? "Een gratis account voor jouw gezinsagenda."
+              ? "Je wordt de beheerder en maakt daarna de accounts voor je gezinsleden aan."
               : "Log in en bekijk wat er op de planning staat."}
           </p>
           {error && (
@@ -112,7 +119,7 @@ export default function Auth({ onLogin }: { onLogin: (user: User) => void }) {
           >
             {register
               ? "Al een account? Inloggen"
-              : "Nieuw hier? Maak een account"}
+              : "Nieuwe familie? Start een agenda"}
           </button>
         </form>
       </section>

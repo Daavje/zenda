@@ -59,6 +59,56 @@ async function main() {
       }),
       1,
     );
+    const feedOwner = await prisma.user.create({
+      data: {
+        name: "Private owner",
+        email: "private@test.example",
+        passwordHash: "test",
+      },
+    });
+    const feed = await prisma.calendarFeed.create({
+      data: {
+        name: "Private",
+        url: "https://example.test/calendar",
+        ownerId: feedOwner.id,
+        calendarId: calendar.id,
+      },
+    });
+    const privateEvent = await prisma.event.create({
+      data: {
+        title: "Private reminder",
+        calendarId: calendar.id,
+        feedId: feed.id,
+        start: new Date(+now + 15 * 60000),
+        end: new Date(+now + 75 * 60000),
+        reminderMinutes: 15,
+      },
+    });
+    await sendReminders(now);
+    assert.equal(
+      deliveries.length,
+      1,
+      "Private feed reminder is not sent to the calendar admin",
+    );
+    await prisma.feedShare.create({
+      data: { feedId: feed.id, userId: user.id },
+    });
+    await sendReminders(now);
+    assert.equal(
+      deliveries.length,
+      2,
+      "Selected audience receives the external reminder",
+    );
+    await prisma.feedShare.deleteMany({ where: { feedId: feed.id } });
+    await prisma.notificationDelivery.deleteMany({
+      where: { occurrenceKey: { startsWith: privateEvent.id + ":" } },
+    });
+    await sendReminders(now);
+    assert.equal(
+      deliveries.length,
+      2,
+      "Revoking external visibility stops reminders",
+    );
     await prisma.calendarMember.delete({
       where: {
         userId_calendarId: { userId: user.id, calendarId: calendar.id },
@@ -68,7 +118,7 @@ async function main() {
       where: { subscriptionId: subscription.id },
     });
     await sendReminders(now);
-    assert.equal(deliveries.length, 1, "Revoked members receive no reminders");
+    assert.equal(deliveries.length, 2, "Revoked members receive no reminders");
     console.log(
       "PASS: reminders, delivery deduplication and revoked membership (push provider mocked; no external notification sent).",
     );

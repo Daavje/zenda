@@ -14,6 +14,7 @@ import {
 } from "./calendar/recurrence";
 import { importCalendar, exportCalendar } from "./calendar/ical";
 import { startFeedSync, syncFeed } from "./calendar/feeds";
+import { visibleEvent, visibleFeed } from "./calendar/access";
 import { startReminders, pushKey, saveSubscription } from "./notifications";
 
 const scrypt = promisify(scryptCallback);
@@ -101,7 +102,19 @@ async function startSession(userId: string, res: Response) {
     path: "/",
   });
 }
-const publicUser = { id: true, name: true, email: true } as const;
+const publicUser = {
+  id: true,
+  name: true,
+  email: true,
+  managedById: true,
+} as const;
+async function passwordHash(value: unknown) {
+  const password = text(value, "Wachtwoord", 256);
+  if (password.length < 12)
+    fail(400, "Gebruik minimaal 12 tekens voor het wachtwoord.");
+  const salt = randomBytes(16).toString("hex");
+  return `${salt}:${((await scrypt(password, salt, 64)) as Buffer).toString("hex")}`;
+}
 const attempts = new Map<string, { count: number; until: number }>();
 app.use("/api/auth", (req, _res, next) => {
   if (req.method === "POST") {
@@ -149,15 +162,25 @@ app.post("/api/auth/register", async (req, res) => {
       const calendars = await tx.calendar.findMany({
         where: { members: { none: {} } },
       });
-      for (const calendar of calendars)
+      for (const calendar of calendars) {
         await tx.calendarMember.create({
           data: { userId: user.id, calendarId: calendar.id, role: "ADMIN" },
         });
+        await tx.calendar.update({
+          where: { id: calendar.id },
+          data: { ownerId: user.id },
+        });
+        await tx.calendarFeed.updateMany({
+          where: { calendarId: calendar.id, ownerId: null },
+          data: { ownerId: user.id },
+        });
+      }
     }
     if ((await tx.calendarMember.count({ where: { userId: user.id } })) === 0)
       await tx.calendar.create({
         data: {
           name: "Mijn gezin",
+          ownerId: user.id,
           members: { create: { userId: user.id, role: "ADMIN" } },
         },
       });
@@ -183,7 +206,12 @@ app.post("/api/auth/login", async (req, res) => {
   )
     fail(401, "E-mailadres of wachtwoord klopt niet.");
   await startSession(user!.id, res);
-  res.json({ id: user!.id, name: user!.name, email: user!.email });
+  res.json({
+    id: user!.id,
+    name: user!.name,
+    email: user!.email,
+    managedById: user!.managedById,
+  });
 });
 app.use("/api", async (req, res, next) => {
   const token = sessionToken(req);
@@ -229,6 +257,15 @@ app.get("/api/calendars", async (_req, res) => {
   res.json(memberships.map(({ calendar, role }) => ({ ...calendar, role })));
 });
 app.post("/api/calendars", async (req, res) => {
+  if (
+    await prisma.calendarMember.count({ where: { userId: res.locals.user.id } })
+  )
+    fail(
+      409,
+      "Je hebt al een familieagenda. Voeg een externe agenda toe via instellingen.",
+    );
+  if (res.locals.user.managedById)
+    fail(403, "Je beheerder beheert de familieagenda.");
   const name = text(req.body.name, "Agendanaam", 100);
   const timezone = req.body.timezone || "Europe/Amsterdam";
   try {
@@ -240,6 +277,7 @@ app.post("/api/calendars", async (req, res) => {
     data: {
       name,
       timezone,
+      ownerId: res.locals.user.id,
       members: { create: { userId: res.locals.user.id, role: "ADMIN" } },
     },
   });
@@ -256,7 +294,11 @@ app.use("/api/calendars/:calendarId", async (req, res, next) => {
     include: { calendar: true },
   });
   if (!member) return res.status(404).json({ error: "Agenda niet gevonden." });
-  if (req.method !== "GET" && member.role === "VIEW")
+  if (
+    req.method !== "GET" &&
+    member.role === "VIEW" &&
+    !/^\/feeds(?:\/|$)/.test(req.path)
+  )
     return res
       .status(403)
       .json({ error: "Je hebt alleen leesrechten voor deze agenda." });
@@ -265,25 +307,70 @@ app.use("/api/calendars/:calendarId", async (req, res, next) => {
   next();
 });
 const prefix = "/api/calendars/:calendarId";
+const feedSelect = {
+  id: true,
+  name: true,
+  color: true,
+  ownerId: true,
+  owner: { select: { name: true } },
+  lastSync: true,
+  lastError: true,
+  shares: { select: { userId: true } },
+} as const;
+async function ownedFeed(req: Request, res: Response) {
+  const feed = await prisma.calendarFeed.findFirst({
+    where: {
+      id: String(req.params.id),
+      calendarId: res.locals.calendar.id,
+      ownerId: res.locals.user.id,
+    },
+  });
+  return feed || fail(404, "Eigen koppeling niet gevonden.");
+}
+async function audience(value: unknown, calendarId: string, ownerId: string) {
+  if (
+    !Array.isArray(value) ||
+    value.length > 100 ||
+    value.some((id) => typeof id !== "string")
+  )
+    fail(400, "Ongeldige personenlijst.");
+  const ids = [...new Set(value as string[])].filter((id) => id !== ownerId);
+  if (
+    (await prisma.calendarMember.count({
+      where: { calendarId, userId: { in: ids } },
+    })) !== ids.length
+  )
+    fail(400, "Kies alleen leden van deze familieagenda.");
+  return ids;
+}
 app.get(`${prefix}/feeds`, async (_req, res) => {
+  const feeds = await prisma.calendarFeed.findMany({
+    where: {
+      calendarId: res.locals.calendar.id,
+      ...visibleFeed(res.locals.user.id),
+    },
+    select: feedSelect,
+  });
   res.json(
-    await prisma.calendarFeed.findMany({
-      where: { calendarId: res.locals.calendar.id },
-      select: { id: true, name: true, lastSync: true, lastError: true },
-    }),
+    feeds.map((feed) => ({
+      ...feed,
+      shares: feed.ownerId === res.locals.user.id ? feed.shares : [],
+      lastError: feed.ownerId === res.locals.user.id ? feed.lastError : null,
+    })),
   );
 });
 app.post(`${prefix}/feeds`, async (req, res) => {
-  if (res.locals.role !== "ADMIN")
-    fail(403, "Alleen de beheerder kan koppelingen instellen.");
   const name = text(req.body.name, "Naam", 100),
     url = text(req.body.url, "Agendalink", 2048);
   if (
     (await prisma.calendarFeed.count({
-      where: { calendarId: res.locals.calendar.id },
+      where: {
+        calendarId: res.locals.calendar.id,
+        ownerId: res.locals.user.id,
+      },
     })) >= 10
   )
-    fail(400, "Maximaal 10 externe agenda’s per agenda.");
+    fail(400, "Maximaal 10 externe agenda’s per persoon.");
   try {
     const parsed = new URL(url.replace(/^webcal:/i, "https:"));
     if (parsed.protocol !== "https:" || parsed.username || parsed.password)
@@ -291,33 +378,58 @@ app.post(`${prefix}/feeds`, async (req, res) => {
   } catch {
     fail(400, "Gebruik een geldige HTTPS- of webcal-link.");
   }
+  const ids = await audience(
+    req.body.sharedWith || [],
+    res.locals.calendar.id,
+    res.locals.user.id,
+  );
+  const color = req.body.color || "#627faa";
+  if (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color))
+    fail(400, "Ongeldige kleur.");
   const feed = await prisma.calendarFeed.create({
-    data: { calendarId: res.locals.calendar.id, name, url },
+    data: {
+      calendarId: res.locals.calendar.id,
+      ownerId: res.locals.user.id,
+      name,
+      url,
+      color,
+      shares: { create: ids.map((userId) => ({ userId })) },
+    },
   });
   await syncFeed(feed.id);
   res.status(201).json({ id: feed.id });
 });
-app.post(`${prefix}/feeds/:id/sync`, async (req, res) => {
-  if (res.locals.role !== "ADMIN")
-    fail(403, "Alleen de beheerder kan koppelingen verversen.");
-  const feed = await prisma.calendarFeed.findFirst({
-    where: { id: String(req.params.id), calendarId: res.locals.calendar.id },
+app.patch(`${prefix}/feeds/:id`, async (req, res) => {
+  const feed = await ownedFeed(req, res);
+  const ids = await audience(
+    req.body.sharedWith,
+    res.locals.calendar.id,
+    res.locals.user.id,
+  );
+  const name = text(req.body.name, "Naam", 100),
+    color = text(req.body.color, "Kleur", 7);
+  if (!/^#[0-9a-f]{6}$/i.test(color)) fail(400, "Ongeldige kleur.");
+  await prisma.calendarFeed.update({
+    where: { id: feed.id },
+    data: {
+      name,
+      color,
+      shares: { deleteMany: {}, create: ids.map((userId) => ({ userId })) },
+    },
   });
-  if (!feed) fail(404, "Koppeling niet gevonden.");
-  await syncFeed(feed!.id);
+  res.status(204).end();
+});
+app.post(`${prefix}/feeds/:id/sync`, async (req, res) => {
+  const feed = await ownedFeed(req, res);
+  await syncFeed(feed.id);
   res.status(204).end();
 });
 app.delete(`${prefix}/feeds/:id`, async (req, res) => {
-  if (res.locals.role !== "ADMIN")
-    fail(403, "Alleen de beheerder kan koppelingen verwijderen.");
-  await prisma.calendarFeed.deleteMany({
-    where: { id: String(req.params.id), calendarId: res.locals.calendar.id },
-  });
+  const feed = await ownedFeed(req, res);
+  await prisma.calendarFeed.delete({ where: { id: feed.id } });
   res.status(204).end();
 });
 app.get(`${prefix}/members`, async (_req, res) => {
-  if (res.locals.role !== "ADMIN")
-    fail(403, "Alleen de beheerder kan leden beheren.");
   res.json(
     await prisma.calendarMember.findMany({
       where: { calendarId: res.locals.calendar.id },
@@ -325,16 +437,118 @@ app.get(`${prefix}/members`, async (_req, res) => {
     }),
   );
 });
+function requireOwner(res: Response) {
+  if (res.locals.calendar.ownerId !== res.locals.user.id)
+    fail(403, "Alleen de familiebeheerder kan dit wijzigen.");
+}
+app.patch(prefix, async (req, res) => {
+  requireOwner(res);
+  const name = text(req.body.name, "Agendanaam", 100);
+  res.json(
+    await prisma.calendar.update({
+      where: { id: res.locals.calendar.id },
+      data: { name },
+    }),
+  );
+});
+app.post(`${prefix}/users`, async (req, res) => {
+  requireOwner(res);
+  const name = text(req.body.name, "Naam", 100),
+    email = text(req.body.email, "E-mailadres", 254).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    fail(400, "Vul een geldig e-mailadres in.");
+  if (!["VIEW", "EDIT"].includes(req.body.role))
+    fail(400, "Kies lezen of bewerken.");
+  const hash = await passwordHash(req.body.password);
+  if (await prisma.user.findUnique({ where: { email } }))
+    fail(409, "Dit e-mailadres heeft al een account.");
+  const user = await prisma.user.create({
+    data: {
+      name,
+      email,
+      passwordHash: hash,
+      managedById: res.locals.user.id,
+      memberships: {
+        create: { calendarId: res.locals.calendar.id, role: req.body.role },
+      },
+    },
+    select: publicUser,
+  });
+  res.status(201).json(user);
+});
+app.patch(`${prefix}/users/:userId`, async (req, res) => {
+  requireOwner(res);
+  const user = await prisma.user.findFirst({
+    where: {
+      id: String(req.params.userId),
+      managedById: res.locals.user.id,
+      memberships: { some: { calendarId: res.locals.calendar.id } },
+    },
+  });
+  if (!user) fail(404, "Beheerd gezinsaccount niet gevonden.");
+  const name = text(req.body.name, "Naam", 100);
+  if (!["VIEW", "EDIT"].includes(req.body.role))
+    fail(400, "Kies lezen of bewerken.");
+  const hash = req.body.password
+    ? await passwordHash(req.body.password)
+    : undefined;
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: user!.id },
+      data: { name, ...(hash ? { passwordHash: hash } : {}) },
+    });
+    await tx.calendarMember.update({
+      where: {
+        userId_calendarId: {
+          userId: user!.id,
+          calendarId: res.locals.calendar.id,
+        },
+      },
+      data: { role: req.body.role },
+    });
+    if (hash) await tx.session.deleteMany({ where: { userId: user!.id } });
+  });
+  res.status(204).end();
+});
+app.delete(`${prefix}/users/:userId`, async (req, res) => {
+  requireOwner(res);
+  const user = await prisma.user.findFirst({
+    where: {
+      id: String(req.params.userId),
+      managedById: res.locals.user.id,
+      memberships: { some: { calendarId: res.locals.calendar.id } },
+    },
+  });
+  if (!user || user.id === res.locals.user.id)
+    fail(404, "Beheerd gezinsaccount niet gevonden.");
+  if (req.body.confirmEmail !== user!.email)
+    fail(400, "Bevestig het verwijderen met het e-mailadres.");
+  await prisma.user.delete({ where: { id: user!.id } });
+  res.status(204).end();
+});
+
 app.post(`${prefix}/members`, async (req, res) => {
   if (res.locals.role !== "ADMIN")
     fail(403, "Alleen de beheerder kan leden beheren.");
   const email = text(req.body.email, "E-mailadres", 254).toLowerCase();
-  if (!["VIEW", "EDIT", "ADMIN"].includes(req.body.role))
-    fail(400, "Ongeldige rol.");
+  requireOwner(res);
+  if (!["VIEW", "EDIT"].includes(req.body.role)) fail(400, "Ongeldige rol.");
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user) fail(404, "Laat deze persoon eerst een account aanmaken.");
   if (user!.id === res.locals.user.id)
     fail(400, "Je kunt je eigen beheerdersrol niet wijzigen.");
+  if (
+    user!.managedById &&
+    !(await prisma.calendarMember.findUnique({
+      where: {
+        userId_calendarId: {
+          userId: user!.id,
+          calendarId: res.locals.calendar.id,
+        },
+      },
+    }))
+  )
+    fail(403, "Een beheerd gezinsaccount heeft één familieagenda.");
   res.json(
     await prisma.calendarMember.upsert({
       where: {
@@ -353,13 +567,26 @@ app.post(`${prefix}/members`, async (req, res) => {
   );
 });
 app.delete(`${prefix}/members/:userId`, async (req, res) => {
+  requireOwner(res);
   if (res.locals.role !== "ADMIN" || req.params.userId === res.locals.user.id)
     fail(403, "Dit lid kan niet worden verwijderd.");
-  await prisma.calendarMember.deleteMany({
-    where: {
-      calendarId: res.locals.calendar.id,
-      userId: String(req.params.userId),
-    },
+  const targetId = String(req.params.userId);
+  const target = await prisma.user.findUnique({ where: { id: targetId } });
+  if (target?.managedById === res.locals.user.id)
+    fail(400, "Verwijder een beheerd account via accountbeheer.");
+  await prisma.$transaction(async (tx) => {
+    await tx.feedShare.deleteMany({
+      where: { userId: targetId, feed: { calendarId: res.locals.calendar.id } },
+    });
+    await tx.calendarFeed.deleteMany({
+      where: { ownerId: targetId, calendarId: res.locals.calendar.id },
+    });
+    await tx.calendarMember.deleteMany({
+      where: {
+        calendarId: res.locals.calendar.id,
+        userId: String(req.params.userId),
+      },
+    });
   });
   res.status(204).end();
 });
@@ -408,7 +635,11 @@ const include = {
 } as const;
 async function findEvent(req: Request, res: Response) {
   const event = await prisma.event.findFirst({
-    where: { id: String(req.params.id), calendarId: res.locals.calendar.id },
+    where: {
+      id: String(req.params.id),
+      calendarId: res.locals.calendar.id,
+      AND: [visibleEvent(res.locals.user.id)],
+    },
     include,
   });
   return event || fail(404, "Afspraak niet gevonden.");
@@ -422,6 +653,7 @@ app.get(`${prefix}/events`, async (req, res) => {
     where: {
       calendarId: res.locals.calendar.id,
       start: { lt: end },
+      AND: [visibleEvent(res.locals.user.id)],
       OR: [{ end: { gt: start } }, { recurrenceRule: { not: null } }],
     },
     include,
@@ -653,6 +885,19 @@ app.post(`${prefix}/import`, async (req, res) => {
       error instanceof Error ? error.message : "Ongeldig agendabestand.",
     );
   }
+  if (
+    await prisma.event.count({
+      where: {
+        calendarId: res.locals.calendar.id,
+        feedId: { not: null },
+        externalUid: { in: data.map((event) => event.externalUid) },
+      },
+    })
+  )
+    fail(
+      409,
+      "Dit bestand bevat afspraken uit een gekoppelde agenda. Ververs de koppeling.",
+    );
   await prisma.$transaction(
     data.map((event) =>
       prisma.event.upsert({
@@ -671,7 +916,10 @@ app.post(`${prefix}/import`, async (req, res) => {
 });
 app.get(`${prefix}/export`, async (_req, res) => {
   const events = await prisma.event.findMany({
-    where: { calendarId: res.locals.calendar.id },
+    where: {
+      calendarId: res.locals.calendar.id,
+      AND: [visibleEvent(res.locals.user.id)],
+    },
   });
   res.setHeader("Content-Disposition", "attachment; filename=zenda.ics");
   res

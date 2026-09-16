@@ -18,7 +18,7 @@ Er zijn geen vaste gezinsleden, voorbeeldafspraken of standaardwachtwoorden in d
 ## Functies
 
 - Accounts met gehashte wachtwoorden en intrekbare sessies in HttpOnly-cookies.
-- Meerdere agenda’s; delen met bestaande accounts met lees-, bewerk- of beheerdersrechten.
+- Eén familieagenda met één beheerder. De beheerder maakt gezinsaccounts aan met lees- of bewerkrechten, past namen en wachtwoorden aan en kan accounts verwijderen.
 - Personen met een eigen kleur en initialen; meerdere personen per afspraak.
 - Dag-, week- en maandweergave, navigatie, zoeken en personenfilter.
 - Afspraken aanmaken, bewerken en verwijderen, met begin/einde, locatie en notities.
@@ -28,7 +28,9 @@ Er zijn geen vaste gezinsleden, voorbeeldafspraken of standaardwachtwoorden in d
 - Automatisch verversen tussen apparaten, elke 15 seconden als de agenda zichtbaar is.
 - Herinneringen in een geopende agenda en Web Push voor meldingen op de achtergrond.
 - iCalendar-bestanden importeren/exporteren. Dezelfde UID opnieuw importeren werkt een afspraak bij.
-- Externe HTTPS/webcal-agenda’s koppelen, elke 15 minuten verversen, met foutstatus en handmatige verversing. Externe afspraken zijn alleen-lezen.
+- Persoonlijke externe HTTPS/webcal-agenda’s, standaard privé. De eigenaar kiest welke gezinsleden ze mogen zien. Elke gebruiker kan zichtbare agenda’s afzonderlijk aan- en uitzetten. Koppelingen verversen elke 15 minuten.
+- Agenda centraal met een compacte zijbalk. Aparte tabs voor persoonlijke instellingen en agenda-instellingen.
+- Vier thema’s (salie, oceaan, roze, donker), eigen accentkleur, compacte weergave en een instelbare standaardweergave. Voorkeuren en aan/uit-keuzes worden per account op het apparaat bewaard.
 - Responsieve webinterface, toetsenbordbediening en installatie als webapp via het browsermenu.
 
 Zenda gebruikt PostgreSQL als leidende opslag. Externe koppelingen gebruiken iCalendar-abonnementen. Er is geen tweerichtings-CalDAV-adapter of Google/Microsoft-OAuth-koppeling. Dit was in het contextdocument een open architectuurkeuze; de bestaande REST/Prisma-architectuur is voortgezet.
@@ -58,7 +60,15 @@ docker compose -f compose.production.yml up -d --build
 ```
 
 4. Zet een HTTPS-reverse-proxy, bijvoorbeeld Caddy of nginx, voor `127.0.0.1:3000`. API en database hebben geen publieke poort. De productiesessie gebruikt een Secure-cookie en vereist HTTPS.
-5. Maak je eerste account en deel de agenda vanuit **Agenda delen**.
+5. Start een familieagenda en maak gezinsaccounts aan via **Agenda-instellingen → Gezinsaccounts**.
+
+## Familiebeheer en privacy
+
+De familiebeheerder kan accounts aanmaken, namen en rollen aanpassen, wachtwoorden opnieuw instellen en accounts definitief verwijderen. Verwijderen vereist het intypen van het e-mailadres. Sessies, pushabonnementen en persoonlijke externe koppelingen van dat account worden verwijderd; gezamenlijke afspraken blijven behouden. Je eigen beheerdersaccount kan hier niet worden verwijderd. Dit beheer gebeurt via gecontroleerde acties in de app, zonder ruwe SQL of databasewachtwoorden in de interface.
+
+Iedereen, ook een gezinslid met alleen leesrechten, kan onder **Instellingen** een eigen externe agenda toevoegen. Zonder gekozen gezinsleden is die privé. Ook de familiebeheerder krijgt geen toegang tot privéafspraken van anderen via de app. De toegangscontrole geldt voor lijsten, details, bestanden, exports en herinneringen. De eigenaar bepaalt het publiek; de selectievakjes naast de agenda veranderen uitsluitend je eigen weergave.
+
+Bij het bijwerken van een oudere installatie blijven bestaande agenda’s, afspraken en lidmaatschappen behouden. Per agenda wordt de oudste bestaande beheerder de familiebeheerder; andere beheerders krijgen bewerkrechten. Bestaande externe koppelingen krijgen die beheerder als eigenaar en behouden hun bestaande publiek. Historische zelfstandige accounts kunnen toegang houden tot meerdere oude agenda’s; nieuwe beheerde gezinsaccounts krijgen uitsluitend de familieagenda. Een zelfstandig oud account wordt niet zonder meer verwijderd door een andere familiebeheerder: alleen de toegang tot die familie kan worden ingetrokken.
 
 Maak regelmatige PostgreSQL-back-ups met `pg_dump`. Bestanden en accountgegevens zitten in dezelfde database. Test ook het terugzetten van back-ups. De lokale PGlite-map is geen `pg_dump`-bestand; gebruik lokaal de agenda-export voor het overzetten van afspraken, of begin productie met een nieuwe database.
 
@@ -76,7 +86,7 @@ De API controleert elke 30 seconden welke herinneringen verschuldigd zijn. De se
 
 ## Externe agenda’s
 
-Onder **Externe agenda’s** kun je een rechtstreekse iCalendar-abonnementslink toevoegen. Alleen publieke HTTPS-adressen op poort 443 worden opgehaald; interne IP-adressen, URL-wachtwoorden en redirects worden geweigerd. De gevalideerde DNS-uitkomst wordt vastgezet bij de verbinding. Geheime abonnementslinks zijn alleen server-side beschikbaar.
+Onder **Instellingen → Mijn externe agenda’s** kun je een rechtstreekse iCalendar-abonnementslink toevoegen en gezinsleden kiezen die deze mogen zien. Alleen publieke HTTPS-adressen op poort 443 worden opgehaald; interne IP-adressen, URL-wachtwoorden en redirects worden geweigerd. De gevalideerde DNS-uitkomst wordt vastgezet bij de verbinding. Geheime abonnementslinks zijn alleen server-side beschikbaar.
 
 Een bestand mag maximaal 2 MB en 1000 afspraken bevatten. Normale RRULE-, EXDATE-, RECURRENCE-ID- en RDATE-datums worden verwerkt. RDATE-periodes, THISANDFUTURE-wijzigingen, meerdere RRULE’s per afspraak en tijdzones die niet door Intl worden herkend, geven een expliciete importfout. Een mislukte abonnementsverversing bewaart de laatst geslaagde gegevens. Een bestandimport verwijdert niet automatisch afspraken die uit een later bestand ontbreken; een abonnement doet dat wel.
 
@@ -88,7 +98,7 @@ npm test
 npm run build
 ```
 
-`npm test` gebruikt een nieuwe tijdelijke database in het geheugen op poort 55433 en een tijdelijke API op poort 3011. Je eigen database wordt niet gebruikt. De integratietest controleert accountregistratie, sessies, rechten, agenda-isolatie, validatie, herhaling rond wintertijd, losse voorkomens, bestanden, import/export en het intrekken van toegang. Unit-tests controleren maandultimo, schrikkeldagen, bereikoverlap, uitsluitingen, tijdzones en blokkeren van interne feedadressen.
+`npm test` gebruikt tijdelijke databases in het geheugen op poorten 55433 en 55435 en een tijdelijke API op poort 3011. Je eigen database wordt niet gebruikt. De integratietests controleren accountregistratie, sessies, rechten, familiebeheer, privéagenda’s, wachtwoordresets, accountverwijdering, validatie, herhaling rond wintertijd, losse voorkomens, bestanden, import/export en het intrekken van toegang. Unit-tests controleren maandultimo, schrikkeldagen, bereikoverlap, uitsluitingen, tijdzones en blokkeren van interne feedadressen.
 
 De productiebuild, typecontrole en lintcontrole zijn afzonderlijke controles. Een geslaagde lokale test bewijst geen productiehosting of aflevering via een echte pushdienst. Docker-hosting en providers moeten in de eigen hostingomgeving worden getest.
 
